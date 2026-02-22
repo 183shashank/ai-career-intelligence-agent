@@ -22,13 +22,70 @@ role = st.text_input("Target Role (Optional)")
 location = st.text_input("Preferred Location (Optional)")
 resume_file = st.file_uploader("Upload Resume (PDF only)", type=["pdf"])
 
+
+# -----------------------------
+# PDF Extraction
+# -----------------------------
 def extract_text_from_pdf(file):
     pdf_reader = PyPDF2.PdfReader(file)
     text = ""
     for page in pdf_reader.pages:
-        text += page.extract_text()
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text
     return text
 
+
+# -----------------------------
+# Fetch Real Job Links
+# -----------------------------
+def fetch_job_postings(company, role=None, location=None):
+
+    query = f"{company} careers job opening apply"
+
+    if role:
+        query += f" {role}"
+    if location:
+        query += f" {location}"
+
+    response = tavily_client.search(
+        query=query,
+        search_depth="advanced",
+        max_results=10
+    )
+
+    jobs = []
+
+    for result in response.get("results", []):
+        url = result.get("url", "")
+        title = result.get("title", "")
+        content = result.get("content", "")
+
+        url_lower = url.lower()
+
+        # Filter: must contain job-like keywords
+        if any(keyword in url_lower for keyword in [
+            "job", "position", "opening", "apply", "requisition"
+        ]):
+
+            # Avoid generic careers homepage
+            if not url_lower.rstrip("/").endswith("careers"):
+
+                jobs.append({
+                    "title": title,
+                    "url": url,
+                    "description": content[:500]
+                })
+
+        if len(jobs) >= 5:
+            break
+
+    return jobs
+
+
+# -----------------------------
+# Main Button Logic
+# -----------------------------
 if st.button("Find Jobs"):
 
     if not company:
@@ -44,49 +101,59 @@ if st.button("Find Jobs"):
         resume_text = extract_text_from_pdf(resume_file)
 
         st.write("🔎 Searching for real job postings...")
+        jobs = fetch_job_postings(company, role, location)
 
-        search_query = f"{company} {role if role else ''} jobs {location if location else ''} careers site:{company.lower()}.com"
-
-        search_result = tavily_client.search(
-            query=search_query,
-            search_depth="advanced",
-            max_results=5
-        )
-
-        if not search_result["results"]:
-            st.error("Could not find job postings.")
+        if not jobs:
+            st.error("Could not find specific job postings.")
             st.stop()
-
-        job_links = [result["url"] for result in search_result["results"]]
 
         st.success("🧠 Matching jobs with your resume...")
 
+        job_data_for_ai = "\n\n".join(
+            [
+                f"Title: {job['title']}\nLink: {job['url']}\nDescription: {job['description']}"
+                for job in jobs
+            ]
+        )
+
         ai_prompt = f"""
-You are an expert job matching AI.
+You are an expert career intelligence AI.
 
 Company: {company}
 Target Role: {role if role else "Not specified"}
 Preferred Location: {location if location else "Not specified"}
 
-Candidate Resume:
+========================
+CANDIDATE RESUME
+========================
 {resume_text}
 
-Job Links:
-{job_links}
+========================
+JOB POSTINGS
+========================
+{job_data_for_ai}
 
 Your Tasks:
 
-1. Analyze resume skills.
-2. Analyze likely job roles from links.
-3. Rank top 5 best matches.
-4. For each job:
-   - Job Title
-   - Why it's a match
-   - Location (if inferable)
-   - Match Score (1-10)
-   - Direct Apply Link (use exact link from list)
+STEP 1 — Resume Analysis
+- Provide a short professional summary of the candidate.
+- Extract key technical skills.
+- Identify strengths.
+- Identify possible skill gaps relative to target role (if specified).
 
-Be structured and concise.
+STEP 2 — Job Matching
+- Compare resume skills against each job posting.
+- Rank the top 5 best matches.
+
+For each matched job provide:
+- Job Title
+- Why it matches the candidate
+- Location (if mentioned)
+- Match Score (1-10)
+- Direct Apply Link (use EXACT link provided above)
+
+Structure your response clearly using headings.
+Be professional and concise.
 """
 
         response = openai_client.chat.completions.create(
